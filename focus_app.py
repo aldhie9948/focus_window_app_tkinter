@@ -8,12 +8,13 @@ import win32com.client
 import threading
 import pythoncom
 import tkinter 
-from tkinter import StringVar, ttk as tk, font 
+from tkinter import StringVar, ttk as tk, font , messagebox
 import sv_ttk
 import pystray
 from PIL import Image
 import os
 import sys
+from filelock import FileLock, Timeout
 
 selected_window = None  # (hwnd, title)
 running = True         # apakah thread sedang jalan
@@ -21,6 +22,16 @@ running = True         # apakah thread sedang jalan
 # --- Konfigurasi ---
 IDLE_THRESHOLD_SECONDS = 10
 CHECK_INTERVAL_SECONDS = 2
+
+lock_file = "focus_app.lock"
+lock = FileLock(lock_file)
+try:
+  lock.acquire(timeout=0.1)
+except Timeout:
+  messagebox.showerror("Error", "Aplikasi sudah berjalan.")
+  print("Aplikasi sudah berjalan.")
+  sys.exit()
+
 
 def resource_path(relative_path):
     """Dapatkan path absolut, baik saat dijalankan biasa atau via PyInstaller"""
@@ -92,39 +103,6 @@ def set_focused_window(hwnd: int, title: str):
     print(f"Thread untuk '{title}' dihentikan.")
 
 # %%
-class ScrollableFrame(tk.Frame):
-    def __init__(self, container, *args, **kwargs):
-        super().__init__(container, *args, **kwargs)
-
-        canvas = tkinter.Canvas(self)
-        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        self.scrollable_frame = tk.Frame(canvas)
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
-
-        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        # Layout
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Enable mousewheel scrolling
-        self.scrollable_frame.bind("<Enter>", lambda e: self._bind_mousewheel(canvas))
-        self.scrollable_frame.bind("<Leave>", lambda e: self._unbind_mousewheel(canvas))
-
-    def _bind_mousewheel(self, canvas):
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * int(e.delta / 120), "units"))
-
-    def _unbind_mousewheel(self, canvas):
-        canvas.unbind_all("<MouseWheel>")
-
-# %%
 class MyApp(tkinter.Tk):
   def __init__(self):
     super().__init__()
@@ -143,6 +121,7 @@ class MyApp(tkinter.Tk):
 
     self.title("Focus Window App")
     self.minsize(width=800, height=600)
+    self.maxsize(width=800, height=1080)
 
     sv_ttk.set_theme(root=self, theme="dark")
 
@@ -187,6 +166,13 @@ class MyApp(tkinter.Tk):
     global running
     icon.stop()
     running = False
+
+    try:
+      lock.release()
+      os.remove(lock_file)
+    except Exception as e:
+      print(f"Gagal menghapus file lock: {e}")
+
     self.destroy()
   
   def make_focus_command(self, hwnd: int, title: str):
