@@ -14,7 +14,7 @@ import pystray
 from PIL import Image
 import os
 import sys
-from filelock import FileLock, Timeout
+import msvcrt
 
 selected_window = None  # (hwnd, title)
 running = True         # apakah thread sedang jalan
@@ -24,10 +24,12 @@ IDLE_THRESHOLD_SECONDS = 10
 CHECK_INTERVAL_SECONDS = 2
 
 lock_file = "focus_app.lock"
-lock = FileLock(lock_file)
+lock = None
+
 try:
-  lock.acquire(timeout=0.1)
-except Timeout:
+  lock = open(lock_file, "w")
+  msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+except Exception as e:
   messagebox.showerror("Error", "Aplikasi sudah berjalan.")
   print("Aplikasi sudah berjalan.")
   sys.exit()
@@ -123,13 +125,12 @@ class MyApp(tkinter.Tk):
     self.minsize(width=800, height=600)
     self.maxsize(width=800, height=1080)
 
+    self.windows = enum_window_titles()
+
     sv_ttk.set_theme(root=self, theme="dark")
 
     main_frame = tk.Frame(self, padding=50)
     main_frame.pack(fill="both", expand=True)
-
-    # content
-    windows = enum_window_titles()
 
     tk.Label(main_frame, text="Daftar Aplikasi Berjalan", font=self.h3_font, justify="center", anchor="center").pack(fill="x", pady=10)
 
@@ -140,41 +141,45 @@ class MyApp(tkinter.Tk):
     app_list_frame = tk.Frame(main_frame)
     app_list_frame.pack(fill="both", expand=True)
 
-    for hwnd, title in windows:
+    for hwnd, title in self.windows:
       tk.Button(app_list_frame, text=title, command=self.make_focus_command(hwnd, title)).pack(fill="x", pady=10)
     
     self.protocol("WM_DELETE_WINDOW", self.minimize_to_tray)
 
+    # init icon
+    self.icon = pystray.Icon("focus_window_app_icon")
+    self.icon.icon = Image.open(self.icon_path)
+    self.icon.menu = pystray.Menu(
+      pystray.MenuItem("Show", self.show_window, default=True),
+      pystray.MenuItem("Quit", self.quit_window)
+    )
+
+    threading.Thread(target=self.icon.run, daemon=True).start()
+
+    self.update_windows_list()
+
   
   def minimize_to_tray(self):
     self.withdraw()
-
-    image = Image.open(self.icon_path)
-
-    menu = (pystray.MenuItem("Show", self.show_window, default=True),
-            pystray.MenuItem("Quit", self.quit_window))
-
-    icon = pystray.Icon("focus_window_app_icon", image, "Focus Window App", menu)
-
-    icon.run()
   
-  def show_window(self, icon):
-    icon.stop()
+  def show_window(self, _=None):
     self.after(0, self.deiconify())
 
-  def quit_window(self, icon):
+  def quit_window(self, _=None):
     global running
-    icon.stop()
     running = False
+    self.icon.stop()
 
     try:
-      lock.release()
+      msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+      lock.close()
       os.remove(lock_file)
     except Exception as e:
       print(f"Gagal menghapus file lock: {e}")
 
     self.destroy()
-  
+
+
   def make_focus_command(self, hwnd: int, title: str):
     def func():
         global selected_window
@@ -183,6 +188,10 @@ class MyApp(tkinter.Tk):
         thread = threading.Thread(target=set_focused_window, args=(hwnd, title), daemon=True)
         thread.start()
     return func
+
+  def update_windows_list(self):
+    self.windows = enum_window_titles()
+    self.after(2000, self.update_windows_list)
 
 # %%
 if __name__ == "__main__":
